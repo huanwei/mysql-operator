@@ -202,12 +202,18 @@ func sortFlags(flags map[NormalizedName]*Flag) []*Flag {
 func (f *FlagSet) SetNormalizeFunc(n func(f *FlagSet, name string) NormalizedName) {
 	f.normalizeNameFunc = n
 	f.sortedFormal = f.sortedFormal[:0]
-	for k, v := range f.orderedFormal {
-		delete(f.formal, NormalizedName(v.Name))
-		nname := f.normalizeFlagName(v.Name)
-		v.Name = string(nname)
-		f.formal[nname] = v
-		f.orderedFormal[k] = v
+	for fname, flag := range f.formal {
+		nname := f.normalizeFlagName(flag.Name)
+		if fname == nname {
+			continue
+		}
+		flag.Name = string(nname)
+		delete(f.formal, fname)
+		f.formal[nname] = flag
+		if _, set := f.actual[fname]; set {
+			delete(f.actual, fname)
+			f.actual[nname] = flag
+		}
 	}
 }
 
@@ -440,13 +446,15 @@ func (f *FlagSet) Set(name, value string) error {
 		return fmt.Errorf("invalid argument %q for %q flag: %v", value, flagName, err)
 	}
 
-	if f.actual == nil {
-		f.actual = make(map[NormalizedName]*Flag)
-	}
-	f.actual[normalName] = flag
-	f.orderedActual = append(f.orderedActual, flag)
+	if !flag.Changed {
+		if f.actual == nil {
+			f.actual = make(map[NormalizedName]*Flag)
+		}
+		f.actual[normalName] = flag
+		f.orderedActual = append(f.orderedActual, flag)
 
-	flag.Changed = true
+		flag.Changed = true
+	}
 
 	if flag.Deprecated != "" {
 		fmt.Fprintf(f.out(), "Flag --%s has been deprecated, %s\n", flag.Name, flag.Deprecated)
@@ -556,6 +564,14 @@ func UnquoteUsage(flag *Flag) (name string, usage string) {
 		name = "int"
 	case "uint64":
 		name = "uint"
+	case "stringSlice":
+		name = "strings"
+	case "intSlice":
+		name = "ints"
+	case "uintSlice":
+		name = "uints"
+	case "boolSlice":
+		name = "bools"
 	}
 
 	return
@@ -570,11 +586,14 @@ func wrapN(i, slop int, s string) (string, string) {
 		return s, ""
 	}
 
-	w := strings.LastIndexAny(s[:i], " \t")
+	w := strings.LastIndexAny(s[:i], " \t\n")
 	if w <= 0 {
 		return s, ""
 	}
-
+	nlPos := strings.LastIndex(s[:i], "\n")
+	if nlPos > 0 && nlPos < w {
+		return s[:nlPos], s[nlPos+1:]
+	}
 	return s[:w], s[w+1:]
 }
 
@@ -583,7 +602,7 @@ func wrapN(i, slop int, s string) (string, string) {
 // caller). Pass `w` == 0 to do no wrapping
 func wrap(i, w int, s string) string {
 	if w == 0 {
-		return s
+		return strings.Replace(s, "\n", "\n"+strings.Repeat(" ", i), -1)
 	}
 
 	// space between indent i and end of line width w into which
@@ -601,7 +620,7 @@ func wrap(i, w int, s string) string {
 	}
 	// If still not enough space then don't even try to wrap.
 	if wrap < 24 {
-		return s
+		return strings.Replace(s, "\n", r, -1)
 	}
 
 	// Try to avoid short orphan words on the final line, by
@@ -613,14 +632,14 @@ func wrap(i, w int, s string) string {
 	// Handle first line, which is indented by the caller (or the
 	// special case above)
 	l, s = wrapN(wrap, slop, s)
-	r = r + l
+	r = r + strings.Replace(l, "\n", "\n"+strings.Repeat(" ", i), -1)
 
 	// Now wrap the rest
 	for s != "" {
 		var t string
 
 		t, s = wrapN(wrap, slop, s)
-		r = r + "\n" + strings.Repeat(" ", i) + t
+		r = r + "\n" + strings.Repeat(" ", i) + strings.Replace(t, "\n", "\n"+strings.Repeat(" ", i), -1)
 	}
 
 	return r
@@ -658,6 +677,10 @@ func (f *FlagSet) FlagUsagesWrapped(cols int) string {
 				line += fmt.Sprintf("[=\"%s\"]", flag.NoOptDefVal)
 			case "bool":
 				if flag.NoOptDefVal != "true" {
+					line += fmt.Sprintf("[=%s]", flag.NoOptDefVal)
+				}
+			case "count":
+				if flag.NoOptDefVal != "+1" {
 					line += fmt.Sprintf("[=%s]", flag.NoOptDefVal)
 				}
 			default:
@@ -857,8 +880,10 @@ func VarP(value Value, name, shorthand, usage string) {
 // returns the error.
 func (f *FlagSet) failf(format string, a ...interface{}) error {
 	err := fmt.Errorf(format, a...)
-	fmt.Fprintln(f.out(), err)
-	f.usage()
+	if f.errorHandling != ContinueOnError {
+		fmt.Fprintln(f.out(), err)
+		f.usage()
+	}
 	return err
 }
 
@@ -912,6 +937,9 @@ func (f *FlagSet) parseLongArg(s string, args []string, fn parseFunc) (a []strin
 	}
 
 	err = fn(flag, value)
+	if err != nil {
+		f.failf(err.Error())
+	}
 	return
 }
 
@@ -962,6 +990,9 @@ func (f *FlagSet) parseSingleShortArg(shorthands string, args []string, fn parse
 	}
 
 	err = fn(flag, value)
+	if err != nil {
+		f.failf(err.Error())
+	}
 	return
 }
 
@@ -1034,6 +1065,7 @@ func (f *FlagSet) Parse(arguments []string) error {
 		case ContinueOnError:
 			return err
 		case ExitOnError:
+			fmt.Println(err)
 			os.Exit(2)
 		case PanicOnError:
 			panic(err)

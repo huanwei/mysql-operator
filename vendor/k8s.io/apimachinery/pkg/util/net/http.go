@@ -61,6 +61,9 @@ func JoinPreservingTrailingSlash(elem ...string) string {
 // differentiate probable errors in connection behavior between normal "this is
 // disconnected" should use the method.
 func IsProbableEOF(err error) bool {
+	if err == nil {
+		return false
+	}
 	if uerr, ok := err.(*url.Error); ok {
 		err = uerr.Err
 	}
@@ -276,7 +279,10 @@ func NewProxierWithNoProxyCIDR(delegate func(req *http.Request) (*url.URL, error
 	}
 
 	return func(req *http.Request) (*url.URL, error) {
-		ip := net.ParseIP(req.URL.Hostname())
+		//change by huan begin
+		//ip := net.ParseIP(req.URL.Hostname())
+		ip := net.ParseIP(req.URL.Host)
+		//change by huan end
 		if ip == nil {
 			return delegate(req)
 		}
