@@ -1,6 +1,7 @@
+# huanwei/mysql-agent:0.1
 FROM mysql/mysql-server:8.0.11
 
-COPY bin/linux_amd64/mysql-agent /
+COPY mysql-agent /
 
 USER mysql
 
